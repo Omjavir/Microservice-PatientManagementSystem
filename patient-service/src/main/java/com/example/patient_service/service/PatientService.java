@@ -3,10 +3,14 @@ package com.example.patient_service.service;
 import com.example.patient_service.dto.PatientRequestDTO;
 import com.example.patient_service.exception.EmailAlreadyExistsException;
 import com.example.patient_service.exception.PatientNotFoundException;
+import com.example.patient_service.grpc.BillingServiceGrpcClient;
+import com.example.patient_service.kafka.KafkaProducer;
 import com.example.patient_service.mapper.PatientMapper;
 import com.pm.patientservice.dto.PatientResponseDTO;
 import com.example.patient_service.model.Patient;
 import com.example.patient_service.repository.PatientRepository;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 import java.time.LocalDate;
@@ -15,10 +19,15 @@ import java.util.UUID;
 
 @Service
 public class PatientService {
+    private static final Logger log = LoggerFactory.getLogger(PatientService.class);
     private final PatientRepository patientRepository;
+    private final BillingServiceGrpcClient billingServiceGrpcClient;
+    private final KafkaProducer kafkaProducer;
 
-    public PatientService(PatientRepository patientRepository) {
+    public PatientService(PatientRepository patientRepository,  BillingServiceGrpcClient billingServiceGrpcClient, KafkaProducer kafkaProducer) {
         this.patientRepository = patientRepository;
+        this.billingServiceGrpcClient = billingServiceGrpcClient;
+        this.kafkaProducer = kafkaProducer;
     }
 
     public List<PatientResponseDTO> getPatients() {
@@ -29,11 +38,16 @@ public class PatientService {
 
     public PatientResponseDTO createPatient(PatientRequestDTO patientRequestDTO){
         if(patientRepository.existsByEmail((patientRequestDTO.getEmail()))) {
-            throw new EmailAlreadyExistsException("Patient with Email" + patientRequestDTO.getEmail() + " already exists");
+            throw new EmailAlreadyExistsException("Patient with Email " + patientRequestDTO.getEmail() + " already exists");
         }
 
         Patient newPatient = patientRepository.save(PatientMapper.toModel(patientRequestDTO));
+        // Making a grpc call after the patient is saved in DB
+        billingServiceGrpcClient.createBillingAccount(newPatient.getId().toString(), newPatient.getName(), newPatient.getEmail());
 
+        // Sending the kafka producer event
+        log.info("Publishing patient event to Kafka: {}", newPatient);
+        kafkaProducer.sendEvent(newPatient);
         return PatientMapper.toDTO(newPatient);
     }
 
